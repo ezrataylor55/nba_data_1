@@ -33,10 +33,36 @@ except ImportError:  # pragma: no cover
 
 import numpy as np
 
+LOGGER = logging.getLogger("team_games_min")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 CUSTOM_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": "https://www.nba.com/",
 }
+
+
+def apply_custom_headers() -> None:
+    applied = False
+    for attr in ("_DEFAULT_HEADERS", "DEFAULT_HEADERS", "_HEADERS", "HEADERS"):
+        headers = getattr(NBAStatsHTTP, attr, None)
+        if isinstance(headers, dict):
+            headers.update(CUSTOM_HEADERS)
+            applied = True
+    if not applied:
+        try:  # pragma: no cover - best-effort fallback for library changes
+            client = NBAStatsHTTP()
+            session = getattr(client, "session", None)
+            if session is not None and hasattr(session, "headers"):
+                session.headers.update(CUSTOM_HEADERS)
+                applied = True
+        except Exception as exc:  # pragma: no cover
+            LOGGER.warning("Failed to instantiate NBAStatsHTTP to set headers: %s", exc)
+    if not applied:
+        LOGGER.warning("Unable to apply custom headers to NBAStatsHTTP; continuing with library defaults.")
+
+
+apply_custom_headers()
 NBAStatsHTTP._DEFAULT_HEADERS.update(CUSTOM_HEADERS)
 
 LOGGER = logging.getLogger("team_games_min")
