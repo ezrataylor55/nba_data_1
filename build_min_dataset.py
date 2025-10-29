@@ -212,51 +212,6 @@ def compute_advanced(row: Dict[str, float]) -> Dict[str, Optional[float]]:
     return {"EFG%": efg, "TS%": ts, "FTR": ftr, "TOV%": tov_pct}
 
 
-def parse_minutes(value) -> Optional[float]:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        val = float(value)
-        return val if val >= 0 else None
-    if isinstance(value, str):
-        if not value:
-            return None
-        if ":" in value:
-            parts = value.split(":")
-            try:
-                minutes = float(parts[0])
-                seconds = float(parts[1]) if len(parts) > 1 else 0.0
-                return minutes + seconds / 60.0
-            except ValueError:
-                return None
-        try:
-            val = float(value)
-            return val if val >= 0 else None
-        except ValueError:
-            return None
-    return None
-
-
-def estimate_possessions(team: Dict[str, float], opp: Dict[str, float]) -> Optional[float]:
-    required = ("FGA", "FTA", "OREB", "FGM", "TOV", "DREB")
-    if any(key not in team for key in required) or "DREB" not in opp:
-        return None
-    fga = float(team.get("FGA", np.nan))
-    fta = float(team.get("FTA", np.nan))
-    oreb = float(team.get("OREB", np.nan))
-    fgm = float(team.get("FGM", np.nan))
-    tov = float(team.get("TOV", np.nan))
-    opp_dreb = float(opp.get("DREB", np.nan))
-    if any(pd.isna(val) for val in (fga, fta, oreb, fgm, tov, opp_dreb)):
-        return None
-    if oreb + opp_dreb:
-        orb_factor = (oreb / (oreb + opp_dreb)) * (fga - fgm)
-    else:
-        orb_factor = 0.0
-    possessions = fga + 0.4 * fta - 1.07 * orb_factor + tov
-    return possessions if possessions >= 0 else None
-
-
 def build_rows(game_ids: List[str], logs: pd.DataFrame, sleep_seconds: float) -> List[Dict[str, object]]:
     meta = logs[[
         "GAME_ID",
@@ -273,32 +228,22 @@ def build_rows(game_ids: List[str], logs: pd.DataFrame, sleep_seconds: float) ->
     rows: List[Dict[str, object]] = []
     for gid in game_ids:
         trad_ep = call_endpoint(BoxScoreTraditionalV2, sleep_seconds, game_id=gid)
-        if trad_ep is None:
-            LOGGER.warning("Skipping game %s due to missing traditional box score.", gid)
-            continue
         adv_ep = call_endpoint(BoxScoreAdvancedV2, sleep_seconds, game_id=gid)
         four_ep = call_endpoint(BoxScoreFourFactorsV2, sleep_seconds, game_id=gid)
         summary_ep = call_endpoint(BoxScoreSummaryV2, sleep_seconds, game_id=gid)
-        trad_df = extract_team_table(trad_ep.get_data_frames())
-        if trad_df is None:
-            LOGGER.warning("Skipping game %s due to unavailable team traditional stats.", gid)
+        if None in (trad_ep, adv_ep, four_ep, summary_ep):
+            LOGGER.warning("Skipping game %s due to missing data endpoints.", gid)
             continue
-        adv_df = extract_team_table(adv_ep.get_data_frames()) if adv_ep is not None else None
-        four_df = extract_team_table(four_ep.get_data_frames()) if four_ep is not None else None
-        if adv_ep is None or adv_df is None:
-            LOGGER.warning("BoxScoreAdvancedV2 unavailable for %s; falling back to derived ratings.", gid)
-        if four_ep is None or four_df is None:
-            LOGGER.warning("BoxScoreFourFactorsV2 unavailable for %s; computing factors manually.", gid)
-        if "MIN" not in trad_df.columns:
-            if "TEAM_MIN" in trad_df.columns:
-                trad_df["MIN"] = trad_df["TEAM_MIN"]
-            else:
-                trad_df["MIN"] = np.nan
+        trad_df = extract_team_table(trad_ep.get_data_frames())
+        adv_df = extract_team_table(adv_ep.get_data_frames())
+        four_df = extract_team_table(four_ep.get_data_frames())
+        if trad_df is None or adv_df is None or four_df is None:
+            LOGGER.warning("Skipping game %s due to incomplete team tables.", gid)
+            continue
         trad_df = trad_df[[
             "GAME_ID",
             "TEAM_ID",
             "TEAM_ABBREVIATION",
-            "MIN",
             "FGM",
             "FGA",
             "FG3M",
@@ -315,35 +260,13 @@ def build_rows(game_ids: List[str], logs: pd.DataFrame, sleep_seconds: float) ->
             "PF",
             "PTS",
         ]]
-        combined = trad_df.copy()
         adv_cols = {"PACE": "PACE", "OFF_RATING": "ORtg", "DEF_RATING": "DRtg"}
-        if adv_df is not None:
-            adv_fields = ["GAME_ID", "TEAM_ID"] + [col for col in adv_cols.keys() if col in adv_df.columns]
-            if "NET_RATING" in adv_df.columns:
-                adv_fields.append("NET_RATING")
-            adv_selected = adv_df[adv_fields].rename(columns=adv_cols)
-            combined = combined.merge(adv_selected, on=["GAME_ID", "TEAM_ID"], how="left")
-        else:
-            combined["PACE"] = np.nan
-            combined["ORtg"] = np.nan
-            combined["DRtg"] = np.nan
-            combined["NET_RATING"] = np.nan
-        for col in ("PACE", "ORtg", "DRtg"):
-            if col not in combined.columns:
-                combined[col] = np.nan
-        if "NET_RATING" not in combined.columns:
-            combined["NET_RATING"] = np.nan
-        if four_df is not None:
-            four_selected = four_df[["GAME_ID", "TEAM_ID", "EFG_PCT", "FTA_RATE", "TM_TOV_PCT"]]
-            combined = combined.merge(four_selected, on=["GAME_ID", "TEAM_ID"], how="left")
-        else:
-            combined["EFG_PCT"] = np.nan
-            combined["FTA_RATE"] = np.nan
-            combined["TM_TOV_PCT"] = np.nan
-        for col in ("EFG_PCT", "FTA_RATE", "TM_TOV_PCT"):
-            if col not in combined.columns:
-                combined[col] = np.nan
-        summary_frames = summary_ep.get_data_frames() if summary_ep is not None else []
+        adv_df = adv_df[["GAME_ID", "TEAM_ID"] + list(adv_cols.keys())].rename(columns=adv_cols)
+        four_df = four_df[["GAME_ID", "TEAM_ID", "EFG_PCT", "FTA_RATE", "TM_TOV_PCT"]]
+        combined = trad_df.merge(adv_df, on=["GAME_ID", "TEAM_ID"], how="left").merge(
+            four_df, on=["GAME_ID", "TEAM_ID"], how="left"
+        )
+        summary_frames = summary_ep.get_data_frames()
         summary_game = summary_frames[0] if summary_frames else pd.DataFrame()
         season_type_override: Optional[str] = None
         if not summary_game.empty and "GAMECODE" in summary_game.columns:
@@ -353,19 +276,14 @@ def build_rows(game_ids: List[str], logs: pd.DataFrame, sleep_seconds: float) ->
                 season_type_override = "Playoffs"
             elif code.startswith("002"):
                 season_type_override = "Regular Season"
-        if "NET_RTG" not in combined.columns:
-            combined["NET_RTG"] = combined.get("NET_RATING", np.nan)
-        else:
-            combined["NET_RTG"] = combined["NET_RTG"].where(~pd.isna(combined["NET_RTG"]), combined.get("NET_RATING", np.nan))
-        team_data: Dict[int, Dict[str, object]] = {}
         for _, team_row in combined.iterrows():
             key = (gid, int(team_row["TEAM_ID"]))
             if key not in meta.index:
                 LOGGER.warning("Metadata missing for game %s team %s; skipping game.", gid, team_row["TEAM_ID"])
-                team_data.clear()
+                rows = [r for r in rows if r["game_id"] != gid]
                 break
             meta_row = meta.loc[key]
-            base: Dict[str, object] = {
+            base = {
                 "game_id": gid,
                 "team_id": int(team_row["TEAM_ID"]),
                 "team_abbrev": meta_row["TEAM_ABBREVIATION"],
@@ -389,7 +307,6 @@ def build_rows(game_ids: List[str], logs: pd.DataFrame, sleep_seconds: float) ->
                 "TOV": float(team_row["TOV"]),
                 "PF": float(team_row["PF"]),
             }
-            base["_minutes"] = parse_minutes(team_row.get("MIN"))
             adv_vals = compute_advanced({
                 "FGM": base["FGM"],
                 "FG3M": base["FG3M"],
@@ -408,51 +325,21 @@ def build_rows(game_ids: List[str], logs: pd.DataFrame, sleep_seconds: float) ->
                 "TOV%": team_row.get("TM_TOV_PCT"),
             }
             for metric, value in replacements.items():
-                if value is not None and not pd.isna(value):
+                if not pd.isna(value):
                     base[metric] = float(value)
             base["PACE"] = float(team_row.get("PACE")) if not pd.isna(team_row.get("PACE")) else np.nan
             base["ORtg"] = float(team_row.get("ORtg")) if not pd.isna(team_row.get("ORtg")) else np.nan
             base["DRtg"] = float(team_row.get("DRtg")) if not pd.isna(team_row.get("DRtg")) else np.nan
-            net_from_box = team_row.get("NET_RTG")
-            if net_from_box is None or pd.isna(net_from_box):
-                net_from_box = team_row.get("NET_RATING")
-            if net_from_box is not None and not pd.isna(net_from_box):
+            net_from_box = team_row.get("NET_RATING")
+            if not pd.isna(net_from_box):
                 base["NET_RTG"] = float(net_from_box)
+            elif not pd.isna(base.get("ORtg")) and not pd.isna(base.get("DRtg")):
+                base["NET_RTG"] = float(base["ORtg"] - base["DRtg"])
             else:
                 base["NET_RTG"] = np.nan
-            team_data[int(team_row["TEAM_ID"])] = base
-        if len(team_data) < 2:
-            continue
-        team_ids = list(team_data.keys())
-        for team_id in team_ids:
-            base = team_data[team_id]
-            opp_candidates = [tid for tid in team_ids if tid != team_id]
-            if not opp_candidates:
-                continue
-            opp_id = opp_candidates[0]
-            opp = team_data[opp_id]
-            poss = estimate_possessions(base, opp)
-            opp_poss = estimate_possessions(opp, base)
-            minutes = base.get("_minutes")
-            opp_minutes = opp.get("_minutes")
-            pace_calc = np.nan
-            if not pd.isna(poss) and not pd.isna(opp_poss):
-                minute_values = [val for val in (minutes, opp_minutes) if val is not None and not pd.isna(val) and val > 0]
-                if minute_values:
-                    avg_minutes = sum(minute_values) / len(minute_values)
-                    if avg_minutes > 0:
-                        pace_calc = 48 * (poss + opp_poss) / (2 * (avg_minutes / 5))
-            if pd.isna(base.get("PACE")) and not pd.isna(pace_calc):
-                base["PACE"] = float(pace_calc)
-            if pd.isna(base.get("ORtg")) and not pd.isna(poss) and poss > 0:
-                base["ORtg"] = float(100 * base["team_pts"] / poss)
-            if pd.isna(base.get("DRtg")) and not pd.isna(poss) and poss > 0:
-                base["DRtg"] = float(100 * opp["team_pts"] / poss)
-            if pd.isna(base.get("NET_RTG")) and not pd.isna(base.get("ORtg")) and not pd.isna(base.get("DRtg")):
-                base["NET_RTG"] = float(base["ORtg"] - base["DRtg"])
-        for data in team_data.values():
-            cleaned = {key: value for key, value in data.items() if not key.startswith("_")}
-            rows.append(cleaned)
+            if not pd.isna(base["NET_RTG"]):
+                base["NET_RTG"] = float(base["NET_RTG"])
+            rows.append(base)
     return rows
 
 
