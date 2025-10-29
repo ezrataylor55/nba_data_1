@@ -63,6 +63,10 @@ def apply_custom_headers() -> None:
 
 
 apply_custom_headers()
+NBAStatsHTTP._DEFAULT_HEADERS.update(CUSTOM_HEADERS)
+
+LOGGER = logging.getLogger("team_games_min")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 def parse_args() -> argparse.Namespace:
