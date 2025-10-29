@@ -46,6 +46,13 @@ def apply_custom_headers() -> None:
     """Ensure all NBAStatsHTTP requests include our custom headers safely."""
 
     updated_existing = False
+
+    for attr in ("_DEFAULT_HEADERS", "DEFAULT_HEADERS"):
+        default_headers = getattr(NBAStatsHTTP, attr, None)
+        if isinstance(default_headers, dict):
+            default_headers.update(CUSTOM_HEADERS)
+            updated_existing = True
+
     session = getattr(NBAStatsHTTP, "_SESSION", None)
     if session is not None and hasattr(session, "headers"):
         session.headers.update(CUSTOM_HEADERS)
