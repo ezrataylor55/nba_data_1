@@ -43,6 +43,43 @@ CUSTOM_HEADERS = {
 
 
 def apply_custom_headers() -> None:
+    """Ensure all NBAStatsHTTP requests include our custom headers safely."""
+
+    updated_existing = False
+    session = getattr(NBAStatsHTTP, "_SESSION", None)
+    if session is not None and hasattr(session, "headers"):
+        session.headers.update(CUSTOM_HEADERS)
+        updated_existing = True
+
+    try:
+        original_init = NBAStatsHTTP.__init__
+    except AttributeError:  # pragma: no cover - unexpected library changes
+        LOGGER.warning("NBAStatsHTTP.__init__ missing; cannot apply custom headers patch.")
+        return
+
+    if getattr(original_init, "_custom_headers_patched", False):
+        return
+
+    def patched_init(self, *args, **kwargs):  # type: ignore[misc]
+        original_init(self, *args, **kwargs)
+        session_obj = getattr(self, "session", None)
+        if session_obj is not None and hasattr(session_obj, "headers"):
+            session_obj.headers.update(CUSTOM_HEADERS)
+
+    patched_init._custom_headers_patched = True  # type: ignore[attr-defined]
+    NBAStatsHTTP.__init__ = patched_init  # type: ignore[assignment]
+
+    if not updated_existing:
+        try:
+            client = NBAStatsHTTP()
+            session_obj = getattr(client, "session", None)
+            if session_obj is not None and hasattr(session_obj, "headers"):
+                session_obj.headers.update(CUSTOM_HEADERS)
+        except Exception as exc:  # pragma: no cover - best-effort
+            LOGGER.warning("Failed to instantiate NBAStatsHTTP to seed custom headers: %s", exc)
+
+
+apply_custom_headers()
     applied = False
     for attr in ("_DEFAULT_HEADERS", "DEFAULT_HEADERS", "_HEADERS", "HEADERS"):
         try:
