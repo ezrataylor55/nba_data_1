@@ -826,9 +826,21 @@ def build_schema_hint(df: pd.DataFrame) -> pd.DataFrame:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Vertex AI training table")
-    parser.add_argument("--games", required=True, help="Path to games CSV/TSV")
-    parser.add_argument("--team", required=True, help="Path to team statistics CSV/TSV")
-    parser.add_argument("--player", required=True, help="Path to player statistics CSV/TSV")
+    parser.add_argument(
+        "--games",
+        default="Games.csv",
+        help="Path to games CSV/TSV (defaults to 'Games.csv')",
+    )
+    parser.add_argument(
+        "--team",
+        default="TeamStatistics.csv",
+        help="Path to team statistics CSV/TSV (defaults to 'TeamStatistics.csv')",
+    )
+    parser.add_argument(
+        "--player",
+        default="PlayerStatistics.csv",
+        help="Path to player statistics CSV/TSV (defaults to 'PlayerStatistics.csv')",
+    )
     parser.add_argument("--out", required=True, help="Output CSV path")
     parser.add_argument("--schema_out", help="Optional schema hint CSV path")
     parser.add_argument("--smoke", type=int, help="Limit to first N games for smoke test")
@@ -993,6 +1005,20 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     out_df, helper_rate = build_game_rows(games_df, pre_features, args.min_history)
+
+    if "label_home_margin" not in out_df.columns:
+        raise ValueError(
+            "Output table must include label_home_margin as the predictive target"
+        )
+    extra_label_cols = [
+        col for col in out_df.columns if col.startswith("label_") and col != "label_home_margin"
+    ]
+    if extra_label_cols:
+        logging.info(
+            "Dropping helper label columns to keep Vertex target focused on home margin: %s",
+            extra_label_cols,
+        )
+        out_df = out_df.drop(columns=extra_label_cols, errors="ignore")
 
     feature_subset = out_df.filter(like="tm_")
     if not feature_subset.empty:
